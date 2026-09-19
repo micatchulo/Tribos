@@ -1,4 +1,10 @@
-import { headerCreate } from "./header.js";
+const script = document.createElement("script");
+
+script.type = "module";
+
+script.src = "https://raw.githubusercontent.com/micatchulo/Tribos_Menu/main/menu.js";
+
+document.head.appendChild(script);
 
 // Create menu
 const menu = document.createElement("div");
