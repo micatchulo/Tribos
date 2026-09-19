@@ -1,48 +1,62 @@
 // ==UserScript==
-// @name         TW Central Suite (Fixed)
+// @name         TW Menu
 // @namespace    https://github.com/micatchulo/Tribos_Menu
-// @version      1.1.1
-// @description  Menu central para Tribal Wars — versão corrigida
+// @version      1.0
+// @description  Menu central para Tribal Wars
 // @match        https://pt117.tribalwars.com.pt/game.php*
 // @grant        none
 // ==/UserScript==
 
-(function(){
-    //------------------------------
-    // Imports
-    //------------------------------
-    import {criarHeader} from "./header.js"
+(async function() {
 
-    //------------------------------
-    // Create Menu
-    //------------------------------
+    //-----------------------------------------
+    // Loader de módulos via fetch()
+    //-----------------------------------------
+    async function loadModule(url) {
+        const code = await fetch(url).then(r => r.text());
 
-    // create menu div and attribute id
-    const menu = document.createElement("div")
-    menu.id = "MenuTribos" // 
+        // cria função isolada
+        const moduleFunc = new Function(`
+            const exports = {};
+            ${code}
+            return exports;
+        `);
 
-    // add menu to document body
-    document.body.appendChild(menu)
+        return moduleFunc();
+    }
 
-    //------------------------------
-    // Define Window
-    //------------------------------
+    //-----------------------------------------
+    // Carregar módulos
+    //-----------------------------------------
+    const header = await loadModule("https://raw.githubusercontent.com/micatchulo/Tribos_Menu/main/header.js");
 
-    // width and height (size)
-    menu.style.width = "300px"
-    menu.style.height = "500px"
+    //-----------------------------------------
+    // Criar menu
+    //-----------------------------------------
+    const menu = document.createElement("div");
+    menu.id = "MenuTribos";
 
-    // fixed menu
-    menu.style.position = "fixed"
+    Object.assign(menu.style, {
+        width: "300px",
+        height: "500px",
+        position: "fixed",
+        top: "30px",
+        right: "30px",
+        backgroundColor: "white",
+        zIndex: "99999",
+        border: "1px solid #444",
+        padding: "10px"
+    });
 
-    // top and right (pos)
-    menu.style.top = "30px"
-    menu.style.right = "30px"
+    document.body.appendChild(menu);
 
-    // color
-    menu.style.backgroundColor = "white"
+    //-----------------------------------------
+    // Usar módulo carregado
+    //-----------------------------------------
+    if (header?.criarHeader) {
+        menu.appendChild(header.criarHeader());
+    } else {
+        menu.innerHTML += "<b>Erro ao carregar header.js</b>";
+    }
 
-    // first index of page (priority view)
-    menu.style.zIndex = "99999"
-    })
-
+})();
