@@ -1,5 +1,9 @@
+import {headerCreate} from "./header.js"
+
+// Create menu
 const menu = document.createElement("div");
 
+// Style
 menu.style.width = "350px";
 menu.style.height = "400px";
 
@@ -10,4 +14,5 @@ menu.style.right = "20px";
 menu.style.backgroundColor = "white";
 menu.style.border = "2px solid black";
 
+// Add to document body
 document.body.appendChild(menu);
