@@ -9,31 +9,8 @@
 
 (async function() {
 
-    //-----------------------------------------
-    // Loader de módulos via fetch()
-    //-----------------------------------------
-    async function loadModule(url) {
-        const code = await fetch(url).then(r => r.text());
-
-        // cria função isolada
-        const moduleFunc = new Function(`
-            const exports = {};
-            ${code}
-            return exports;
-        `);
-
-        return moduleFunc();
-    }
-
-    //-----------------------------------------
-    // Carregar módulos
-    //-----------------------------------------
-    const header = await loadModule("https://raw.githubusercontent.com/micatchulo/Tribos_Menu/main/header.js");
-
-    //-----------------------------------------
-    // Criar menu
-    //-----------------------------------------
     const menu = document.createElement("div");
+
     menu.id = "MenuTribos";
 
     Object.assign(menu.style, {
@@ -49,14 +26,5 @@
     });
 
     document.body.appendChild(menu);
-
-    //-----------------------------------------
-    // Usar módulo carregado
-    //-----------------------------------------
-    if (header?.criarHeader) {
-        menu.appendChild(header.criarHeader());
-    } else {
-        menu.innerHTML += "<b>Erro ao carregar header.js</b>";
-    }
 
 })();
