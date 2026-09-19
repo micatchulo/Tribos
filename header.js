@@ -1,4 +1,4 @@
-export createHeader() {
+export function createHeader() {
     
     const header = document.createElement("div")
 
