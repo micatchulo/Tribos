@@ -1,5 +1,3 @@
-import {headerCreate} from "./header.js"
-
 // Create menu
 const menu = document.createElement("div");
 
