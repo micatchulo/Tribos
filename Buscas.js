@@ -2,955 +2,1000 @@
 (() => {
     'use strict';
 
-    const ID = 'tw-buscas-rapidas';
-    const ID_PAINEL = 'tw-buscas-painel';
-    const ID_ESTILO = 'tw-buscas-estilo';
+    // =========================================================
+    // MicaSVG — Buscas rápidas v4.0
+    // Tribos PT — Praça de Reuniões > Busca minuciosa
+    // =========================================================
+
+    const VERSION = '4.0.0';
+    const PANEL_ID = 'MICASVG_BUSCAS';
+    const STYLE_ID = 'MICASVG_BUSCAS_STYLE';
+    const VILLAGE_ID =
+        new URLSearchParams(location.search).get('village') || 'default';
+    const STORAGE_KEY = `micasvg-buscas-${VILLAGE_ID}`;
 
     // Limpar uma execução anterior.
-    if (window.__twBuscasRapidas?.destroy) {
-        window.__twBuscasRapidas.destroy();
-    }
+    window.__micasvgBuscas?.destroy?.();
+    document.getElementById(PANEL_ID)?.remove();
+    document.getElementById(STYLE_ID)?.remove();
 
-    document.getElementById(ID)?.remove();
-    document.getElementById(ID_PAINEL)?.remove();
-    document.getElementById(ID_ESTILO)?.remove();
+    const screen = document.querySelector('#scavenge_screen');
 
-    if (!location.search.includes('mode=scavenge')) {
-        console.warn('[Buscas] Abre primeiro a página das buscas.');
+    if (!screen) {
+        alert('Abre Praça de Reuniões → Busca minuciosa antes de executar Buscas.js.');
         return;
     }
 
-    const UNIDADES = [
-        'spear', 'sword', 'axe', 'archer',
-        'light', 'marcher', 'heavy', 'knight'
+    // Ordem real dos campos de tropas.
+    const UNITS = [
+        { id: 'spear', name: 'Lanceiros', carry: 25 },
+        { id: 'sword', name: 'Espadachins', carry: 15 },
+        { id: 'axe', name: 'Vikings', carry: 10 },
+        { id: 'archer', name: 'Arqueiros', carry: 10 },
+        { id: 'light', name: 'Cavalaria leve', carry: 80 },
+        { id: 'marcher', name: 'Arqueiros a cavalo', carry: 50 },
+        { id: 'heavy', name: 'Cavalaria pesada', carry: 50 },
+        { id: 'knight', name: 'Paladino', carry: 100 }
     ];
 
-    const NOMES = {
-        spear: 'Lanceiros',
-        sword: 'Espadachins',
-        axe: 'Machadeiros',
-        archer: 'Arqueiros',
-        light: 'Cavalaria leve',
-        marcher: 'Arqueiros a cavalo',
-        heavy: 'Cavalaria pesada',
-        knight: 'Paladino'
-    };
+    // Índices dos cartões: 0 = Busca fraca, 1 = Busca humilde, etc.
+    const SEARCHES = [
+        { index: 0, name: 'Busca fraca', factor: 0.10 },
+        { index: 1, name: 'Busca humilde', factor: 0.25 },
+        { index: 2, name: 'Busca inteligente', factor: 0.50 },
+        { index: 3, name: 'Busca extrema', factor: 0.75 }
+    ];
 
-    // Pesos relativos das quatro buscas.
-    const PESOS = [15, 6, 3, 2];
+    // Pesos herdados do algoritmo antigo: inverso do fator.
+    // A distribuição é proporcional entre as buscas disponíveis.
+    const weightOf = search => 1 / search.factor;
 
-    const INTERVALO = 1000;
-    const ATRASO_ENVIO = 500;
-    const INTERVALO_ENTRE_ENVIOS = 1800;
-    const TEMPO_ANTI_DUPLICADO = 30000;
+    let running = true;
+    let minimized = false;
+    let timer = null;
+    let observer = null;
+    let ratioMode = 'weighted';
+    let firstSearchPercent = 50;
+    let lastAlert = '';
+    let lastSnapshot = [];
+    let savedState = {};
 
-    let ligado = false;
-    let envioAuto = false;
-    let aEnviar = false;
-    let intervaloId = null;
-    let temporizadorEnvio = null;
-    let painelAberto = false;
-    let ultimaVerificacaoEnvio = 0;
+    try {
+        savedState = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    } catch (_) {
+        savedState = {};
+    }
 
-    const estadosAnteriores = new Map();
-    const enviadas = new Map();
+    // ---------------------------------------------------------
+    // Estilos
+    // ---------------------------------------------------------
 
-    // --------------------------------------------------
-    // ESTILO
-    // --------------------------------------------------
-
-    const estilo = document.createElement('style');
-    estilo.id = ID_ESTILO;
-
-    estilo.textContent = `
-        #${ID} {
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = `
+        #${PANEL_ID} {
             position: fixed;
-            top: 8px;
-            right: 12px;
-            z-index: 999999;
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 5px;
+            top: 20px;
+            right: 18px;
+            width: 390px;
             max-width: calc(100vw - 24px);
-            padding: 7px;
-            color: #302010;
-            background: #f4e4bc;
-            border: 1px solid #7d510f;
-            border-radius: 5px;
-            box-shadow: 0 3px 12px #0004;
-            font: 12px Verdana, sans-serif;
+            max-height: calc(100vh - 40px);
+            overflow: auto;
+            z-index: 999999;
+            color: #2c2418;
+            background: #f4e4c1;
+            border: 2px solid #7d510f;
+            border-radius: 7px;
+            box-shadow: 0 8px 24px #0008;
+            font: 12px/1.45 Verdana, Arial, sans-serif;
         }
-
-        #${ID} button,
-        #${ID_PAINEL} button {
+        #${PANEL_ID} * { box-sizing: border-box; }
+        #${PANEL_ID} .ms-head {
+            position: sticky;
+            top: 0;
+            z-index: 3;
+            padding: 9px 10px;
+            background: #e1c28f;
+            border-bottom: 1px solid #a47232;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+        }
+        #${PANEL_ID} .ms-head strong {
+            font-size: 14px;
+            color: #502500;
+        }
+        #${PANEL_ID} .ms-content { padding: 10px; }
+        #${PANEL_ID} button,
+        #${PANEL_ID} select {
             cursor: pointer;
-            padding: 6px 9px;
-            border: 1px solid #7d510f;
-            border-radius: 3px;
-            background: #e5c98b;
-            color: #302010;
+            border: 1px solid #a47232;
+            border-radius: 4px;
+            padding: 6px 8px;
+            color: #38250d;
+            background: #fff3d8;
             font: inherit;
         }
-
-        #${ID} button:hover,
-        #${ID_PAINEL} button:hover {
-            background: #d9b96d;
+        #${PANEL_ID} button:hover { background: #f1d39e; }
+        #${PANEL_ID} button:disabled {
+            opacity: .45;
+            cursor: not-allowed;
         }
-
-        #${ID} .ativo {
-            background: #b9dcae;
-            border-color: #467b37;
+        #${PANEL_ID} .ms-status {
+            padding: 8px;
+            margin-bottom: 9px;
+            background: #fff4dc;
+            border: 1px solid #d3b37b;
+            border-radius: 4px;
         }
-
-        #${ID} .inativo {
-            background: #e9b7a7;
-            border-color: #a34c35;
-        }
-
-        #${ID} .atalho-disponivel {
-            background: #c9e2bd;
+        #${PANEL_ID} .ms-alert {
+            padding: 9px;
+            margin-bottom: 8px;
+            background: #ffe6a8;
+            border: 1px solid #c28b24;
+            border-radius: 4px;
             font-weight: bold;
         }
-
-        #${ID_PAINEL} {
-            position: fixed;
-            top: 58px;
-            right: 12px;
-            z-index: 999998;
-            width: min(950px, calc(100vw - 24px));
-            max-height: calc(100vh - 75px);
-            overflow: auto;
-            box-sizing: border-box;
-            padding: 13px;
-            color: #302010;
-            background: #f4e4bc;
-            border: 1px solid #7d510f;
+        #${PANEL_ID} .ms-card {
+            padding: 9px;
+            margin: 7px 0;
+            border: 1px solid #c1a270;
+            border-left: 4px solid #9c8b70;
             border-radius: 5px;
-            box-shadow: 0 4px 16px #0004;
-            font: 12px Verdana, sans-serif;
+            background: #fff8e7;
         }
-
-        #${ID_PAINEL}[hidden] {
-            display: none !important;
+        #${PANEL_ID} .ms-card.active { border-left-color: #d29a28; }
+        #${PANEL_ID} .ms-card.ready { border-left-color: #388746; }
+        #${PANEL_ID} .ms-card.locked { opacity: .7; }
+        #${PANEL_ID} .ms-card.done {
+            border-left-color: #c44336;
+            background: #ffe7df;
+            animation: micasvg-pulse 1s ease-in-out 2;
         }
-
-        #${ID_PAINEL} table {
+        #${PANEL_ID} .ms-title {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 6px;
+        }
+        #${PANEL_ID} .ms-title strong { font-size: 13px; }
+        #${PANEL_ID} .ms-badge {
+            font-size: 10px;
+            padding: 2px 5px;
+            border-radius: 3px;
+            background: #eee0c1;
+        }
+        #${PANEL_ID} .ms-time {
+            font-size: 20px;
+            font-weight: bold;
+            margin: 5px 0;
+            font-variant-numeric: tabular-nums;
+        }
+        #${PANEL_ID} .ms-muted { color: #75664f; font-size: 11px; }
+        #${PANEL_ID} .ms-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 5px;
+            margin-top: 8px;
+        }
+        #${PANEL_ID} .ms-section {
+            border-top: 1px solid #c1a270;
+            margin-top: 12px;
+            padding-top: 10px;
+        }
+        #${PANEL_ID} .ms-section h4 {
+            margin: 0 0 6px;
+            color: #502500;
+            font-size: 13px;
+        }
+        #${PANEL_ID} .ms-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin: 6px 0;
+        }
+        #${PANEL_ID} input[type="range"] { width: 100%; }
+        #${PANEL_ID} .ms-table {
             width: 100%;
             border-collapse: collapse;
+            text-align: center;
+            background: #fff8e7;
+            margin: 7px 0;
+        }
+        #${PANEL_ID} .ms-table th {
+            background: #c1a270;
+            color: white;
+            font-size: 10px;
+            padding: 5px 3px;
+        }
+        #${PANEL_ID} .ms-table td {
+            border-bottom: 1px solid #e2d1b1;
+            padding: 4px 3px;
+        }
+        #${PANEL_ID} .ms-table td:first-child { text-align: left; }
+        #${PANEL_ID} .ms-footer {
+            border-top: 1px solid #c1a270;
             margin-top: 10px;
+            padding-top: 8px;
         }
-
-        #${ID_PAINEL} th,
-        #${ID_PAINEL} td {
-            padding: 7px 5px;
-            border-bottom: 1px solid #c6ad7d;
-            text-align: left;
-            vertical-align: top;
-            overflow-wrap: anywhere;
-        }
-
-        #${ID_PAINEL} th {
-            background: #e5cf9c;
-        }
-
-        #${ID_PAINEL} .curso {
-            color: #805600;
-            font-weight: bold;
-        }
-
-        #${ID_PAINEL} .disponivel {
-            color: #176b2b;
-            font-weight: bold;
-        }
-
-        #${ID_PAINEL} .alerta {
-            color: #a32424;
-            font-weight: bold;
-            background: #f8d9d0;
-        }
-
-        #${ID_PAINEL} .mensagem {
-            margin-top: 10px;
-            padding: 8px;
-            background: #fff4d9;
-            border: 1px solid #d0b779;
-            white-space: pre-wrap;
-        }
-
-        #${ID_PAINEL} .scroll {
-            overflow-x: auto;
+        #${PANEL_ID} .ms-hidden { display: none !important; }
+        @keyframes micasvg-pulse {
+            50% { box-shadow: 0 0 12px #c4433677; }
         }
     `;
+    document.head.appendChild(style);
 
-    document.head.appendChild(estilo);
+    // ---------------------------------------------------------
+    // Painel
+    // ---------------------------------------------------------
 
-    // --------------------------------------------------
-    // INTERFACE
-    // --------------------------------------------------
+    const panel = document.createElement('div');
+    panel.id = PANEL_ID;
+    panel.innerHTML = `
+        <div class="ms-head">
+            <strong>⚔ MicaSVG — Buscas v${VERSION}</strong>
+            <div style="display:flex;gap:5px">
+                <button type="button" data-action="pause">Pausar</button>
+                <button type="button" data-action="minimize">−</button>
+                <button type="button" data-action="close">×</button>
+            </div>
+        </div>
+        <div class="ms-content" data-role="content">
+            <div class="ms-status" data-role="status">A iniciar monitorização…</div>
+            <div data-role="alert"></div>
+            <div data-role="searches"></div>
 
-    function elemento(tag, texto, classe) {
-        const el = document.createElement(tag);
+            <div class="ms-section">
+                <h4>Distribuição das tropas</h4>
+                <div class="ms-muted">
+                    A distribuição é calculada apenas para buscas desbloqueadas
+                    e disponíveis. Preparar tropas não inicia a busca.
+                </div>
 
-        if (texto !== undefined) el.textContent = texto;
-        if (classe) el.className = classe;
+                <div class="ms-row">
+                    <label for="${PANEL_ID}-mode">Método de distribuição</label>
+                    <select id="${PANEL_ID}-mode">
+                        <option value="weighted">Ponderado (algoritmo antigo)</option>
+                        <option value="equal">Partes iguais</option>
+                        <option value="manual">Percentagem personalizada</option>
+                    </select>
+                </div>
 
-        return el;
+                <div data-role="custom-ratio" class="ms-hidden">
+                    <div class="ms-row">
+                        <label for="${PANEL_ID}-ratio">Percentagem para a primeira busca</label>
+                        <strong data-role="ratio-label">50%</strong>
+                    </div>
+                    <input id="${PANEL_ID}-ratio" type="range"
+                        min="0" max="100" step="5" value="50">
+                </div>
+
+                <div data-role="distribution"></div>
+                <div class="ms-actions">
+                    <button type="button" data-action="refresh">Atualizar</button>
+                    <button type="button" data-action="notify">Ativar notificações</button>
+                </div>
+            </div>
+
+            <div class="ms-section">
+                <h4>Próximo regresso</h4>
+                <div data-role="next" class="ms-muted">A aguardar dados do jogo.</div>
+            </div>
+
+            <div class="ms-footer ms-muted">
+                Os temporizadores refletem o contador apresentado pelo jogo.
+                Confirma sempre os valores antes de iniciares uma busca.
+            </div>
+        </div>
+    `;
+    document.body.appendChild(panel);
+
+    const $ = selector => panel.querySelector(selector);
+    const searchContainer = $('[data-role="searches"]');
+
+    // ---------------------------------------------------------
+    // Funções auxiliares
+    // ---------------------------------------------------------
+
+    function parseCount(text) {
+        const match = String(text || '').match(/\(([\d.,]+)\)/);
+        if (!match) return 0;
+
+        const value = Number(match[1].replace(/[.,](?=\d{3}\b)/g, ''));
+        return Number.isFinite(value) ? Math.floor(value) : 0;
     }
 
-    const barra = elemento('div');
-    barra.id = ID;
+    function parseDuration(text) {
+        const value = String(text || '').trim();
+        if (!value) return null;
 
-    const botaoPainel = elemento('button', '☷ Buscas');
-    const botaoMonitor = elemento(
-        'button',
-        'Monitor: OFF',
-        'inativo'
-    );
-    const botaoAuto = elemento(
-        'button',
-        'Envio automático: OFF',
-        'inativo'
-    );
-    const botaoAtualizar = elemento('button', '↻ Atualizar');
-    const atalhos = elemento('div');
-    const estadoRapido = elemento('span', 'A iniciar...');
-    const botaoFechar = elemento('button', '×');
+        const parts = value.split(':').map(Number);
+        if (parts.some(n => !Number.isFinite(n))) return null;
 
-    Object.assign(atalhos.style, {
-        display: 'flex',
-        gap: '4px',
-        flexWrap: 'wrap'
-    });
-
-    botaoFechar.title = 'Fechar o gestor';
-
-    barra.append(
-        botaoPainel,
-        botaoMonitor,
-        botaoAuto,
-        botaoAtualizar,
-        atalhos,
-        estadoRapido,
-        botaoFechar
-    );
-
-    const painel = elemento('section');
-    painel.id = ID_PAINEL;
-    painel.hidden = true;
-
-    const titulo = elemento('h3', 'Gestor de buscas automáticas');
-    const resumo = elemento('p');
-    const mensagem = elemento(
-        'div',
-        'Monitorização desligada.',
-        'mensagem'
-    );
-
-    const scroll = elemento('div', undefined, 'scroll');
-    const tabela = elemento('table');
-    const thead = elemento('thead');
-    const trHead = elemento('tr');
-    const tbody = elemento('tbody');
-
-    [
-        'Busca',
-        'Estado',
-        'Tempo restante',
-        'Regresso estimado',
-        'Distribuição'
-    ].forEach(t => trHead.appendChild(elemento('th', t)));
-
-    thead.appendChild(trHead);
-    tabela.append(thead, tbody);
-    scroll.appendChild(tabela);
-
-    const nota = elemento(
-        'p',
-        'O envio automático começa apenas quando ativares o botão correspondente. ' +
-        'O navegador deve permanecer aberto. Confirma primeiro o funcionamento ' +
-        'com poucas tropas: a distribuição é indicativa e não garante ' +
-        'regressos simultâneos.'
-    );
-
-    painel.append(titulo, resumo, mensagem, scroll, nota);
-    document.body.append(barra, painel);
-
-    // --------------------------------------------------
-    // UTILITÁRIOS
-    // --------------------------------------------------
-
-    function lerNumero(texto) {
-        const numeros = String(texto || '').match(/\d[\d.,\s]*/g);
-        if (!numeros) return 0;
-
-        return Number(numeros[numeros.length - 1].replace(/\D/g, '')) || 0;
-    }
-
-    function lerContador(texto) {
-        const partes = String(texto || '').match(/\d+/g);
-        if (!partes) return null;
-
-        const n = partes.map(Number);
-
-        if (n.length >= 4) {
-            return n[n.length - 4] * 86400
-                + n[n.length - 3] * 3600
-                + n[n.length - 2] * 60
-                + n[n.length - 1];
+        if (parts.length === 3) {
+            return parts[0] * 3600 + parts[1] * 60 + parts[2];
         }
-
-        if (n.length === 3) {
-            return n[0] * 3600 + n[1] * 60 + n[2];
+        if (parts.length === 2) {
+            return parts[0] * 60 + parts[1];
         }
-
-        if (n.length === 2) {
-            return n[0] * 60 + n[1];
+        if (parts.length === 1) {
+            return parts[0];
         }
-
-        return n[0];
+        return null;
     }
 
-    function formatarTempo(segundos) {
-        if (segundos == null) return '—';
+    function fmtDuration(seconds) {
+        if (!Number.isFinite(seconds)) return '—';
 
-        segundos = Math.max(0, Math.floor(segundos));
+        const n = Math.max(0, Math.floor(seconds));
+        const h = Math.floor(n / 3600);
+        const m = Math.floor((n % 3600) / 60);
+        const s = n % 60;
 
-        const h = Math.floor(segundos / 3600);
-        const m = Math.floor((segundos % 3600) / 60);
-        const s = segundos % 60;
-
-        return [
-            String(h).padStart(2, '0'),
-            String(m).padStart(2, '0'),
-            String(s).padStart(2, '0')
-        ].join(':');
+        return h
+            ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+            : `${m}:${String(s).padStart(2, '0')}`;
     }
 
-    function horaRegresso(segundos) {
-        if (segundos == null || segundos <= 0) return '—';
+    function fmtClock(timestamp) {
+        if (!timestamp) return '—';
 
-        return new Date(Date.now() + segundos * 1000)
-            .toLocaleTimeString('pt-PT', {
-                hour: '2-digit',
-                minute: '2-digit',
-                second: '2-digit'
-            });
+        return new Date(timestamp).toLocaleTimeString('pt-PT', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
     }
 
-    function desativado(el) {
-        return !el ||
-            el.disabled ||
-            el.classList.contains('disabled') ||
-            el.classList.contains('btn-disabled') ||
-            el.getAttribute('aria-disabled') === 'true';
+    function setText(parent, selector, text) {
+        const element = parent.querySelector(selector);
+        if (element) element.textContent = text;
     }
 
-    function emitirAlteracao(campo) {
-        campo.dispatchEvent(new Event('input', { bubbles: true }));
-        campo.dispatchEvent(new Event('change', { bubbles: true }));
-    }
+    // ---------------------------------------------------------
+    // Leitura real da página
+    // ---------------------------------------------------------
 
-    // --------------------------------------------------
-    // TROPA DISPONÍVEL
-    // --------------------------------------------------
-
-    function lerTropas() {
-        const resultado = {};
-
-        for (const unidade of UNIDADES) {
-            const atalho = document.querySelector(
-                `.units-entry-all[data-unit="${unidade}"]`
+    function readTroops() {
+        return UNITS.map(unit => {
+            const input = screen.querySelector(
+                `input.unitsInput[name="${unit.id}"]`
             );
 
-            resultado[unidade] = atalho
-                ? lerNumero(atalho.textContent)
-                : 0;
-        }
-
-        return resultado;
-    }
-
-    // --------------------------------------------------
-    // ESTADO DAS BUSCAS
-    // --------------------------------------------------
-
-    function obterElementosBuscas() {
-        let elementos = [
-            ...document.querySelectorAll('.scavenge-option')
-        ];
-
-        if (!elementos.length) {
-            elementos = [0, 1, 2, 3]
-                .map(i => document.getElementById(`scavenge_option_${i}`))
-                .filter(Boolean);
-        }
-
-        return elementos;
-    }
-
-    function lerBuscas() {
-        return obterElementosBuscas().map((el, indice) => {
-            const contador = el.querySelector('.return-countdown');
-            const botaoEnvio = el.querySelector('.free_send_button');
-
-            const bloqueada = Boolean(
-                el.querySelector('.unlock-button, .scavenge-option-locked')
+            const link = screen.querySelector(
+                `.units-entry-all[data-unit="${unit.id}"]`
             );
 
-            const segundos = contador
-                ? lerContador(contador.textContent)
-                : null;
-
-            let estado = 'Indisponível';
-
-            if (bloqueada) {
-                estado = 'Bloqueada';
-            } else if (contador && segundos > 0) {
-                estado = 'Em curso';
-            } else if (botaoEnvio && !desativado(botaoEnvio)) {
-                estado = 'Disponível';
-            } else if (contador && segundos === 0) {
-                estado = 'Contador terminado — validar';
-            }
+            const available = parseCount(link?.textContent || '');
 
             return {
-                indice,
-                nome: el.querySelector('.title')?.textContent.trim()
-                    || `Busca ${indice + 1}`,
-                elemento: el,
-                segundos,
-                estado,
-                bloqueada,
-                disponivel: estado === 'Disponível'
+                ...unit,
+                input,
+                available
             };
         });
     }
 
-    // --------------------------------------------------
-    // DISTRIBUIÇÃO DE TROPAS
-    // --------------------------------------------------
-
-    function calcularDistribuicao(tropas, buscas) {
-        const disponiveis = buscas.filter(b => b.disponivel);
-        const resultado = new Map();
-
-        for (const busca of disponiveis) {
-            resultado.set(busca.indice, {});
-        }
-
-        if (!disponiveis.length) return resultado;
-
-        const pesoTotal = disponiveis.reduce(
-            (total, busca) => total + (PESOS[busca.indice] || 1),
-            0
-        );
-
-        for (const unidade of UNIDADES) {
-            const quantidade = tropas[unidade] || 0;
-
-            const quotas = disponiveis.map(busca => {
-                const quota = quantidade *
-                    (PESOS[busca.indice] || 1) / pesoTotal;
-
-                return {
-                    indice: busca.indice,
-                    valor: Math.floor(quota),
-                    resto: quota - Math.floor(quota)
-                };
-            });
-
-            let atribuido = quotas.reduce(
-                (total, q) => total + q.valor,
-                0
-            );
-
-            const ordenadas = [...quotas].sort(
-                (a, b) => b.resto - a.resto
-            );
-
-            let posicao = 0;
-
-            while (atribuido < quantidade && ordenadas.length) {
-                ordenadas[posicao % ordenadas.length].valor++;
-                atribuido++;
-                posicao++;
-            }
-
-            for (const quota of quotas) {
-                resultado.get(quota.indice)[unidade] = quota.valor;
-            }
-        }
-
-        return resultado;
-    }
-
-    function textoDistribuicao(distribuicao) {
-        if (!distribuicao) return 'Sem distribuição';
-
-        const linhas = UNIDADES
-            .filter(u => (distribuicao[u] || 0) > 0)
-            .map(u => `${NOMES[u]}: ${distribuicao[u]}`);
-
-        return linhas.length
-            ? linhas.join(' · ')
-            : 'Nenhuma tropa detetada';
-    }
-
-    // --------------------------------------------------
-    // CAMPOS DE TROPAS
-    // --------------------------------------------------
-
-    function encontrarCampo(elementoBusca, unidade) {
-        // Preferir campos pertencentes à própria busca.
-        const local = elementoBusca.querySelector(
-            `input.unitsInput[name="${unidade}"], ` +
-            `input[name="${unidade}"]`
-        );
-
-        if (local) return local;
-
-        // Algumas versões do jogo colocam os campos fora do cartão.
-        return document.querySelector(
-            `input.unitsInput[name="${unidade}"], ` +
-            `input[name="${unidade}"]`
-        );
-    }
-
-    function preencherTropas(busca, distribuicao) {
-        let preenchidos = 0;
-
-        for (const unidade of UNIDADES) {
-            const campo = encontrarCampo(busca.elemento, unidade);
-            if (!campo) continue;
-
-            let quantidade = Math.max(
-                0,
-                Math.floor(distribuicao[unidade] || 0)
-            );
-
-            if (campo.max !== '' && Number.isFinite(Number(campo.max))) {
-                quantidade = Math.min(quantidade, Number(campo.max));
-            }
-
-            campo.value = String(quantidade);
-            emitirAlteracao(campo);
-            preenchidos++;
-        }
-
-        return preenchidos;
-    }
-
-    // --------------------------------------------------
-    // PREPARAÇÃO MANUAL OPCIONAL
-    // --------------------------------------------------
-
-    function prepararBusca(indice) {
-        const buscas = lerBuscas();
-        const busca = buscas.find(b => b.indice === indice);
-
-        if (!busca?.disponivel) {
-            mensagem.textContent = `A Busca ${indice + 1} não está disponível.`;
-            return;
-        }
-
-        const distribuicao = calcularDistribuicao(
-            lerTropas(),
-            buscas
-        ).get(indice);
-
-        if (!distribuicao) return;
-
-        const preenchidos = preencherTropas(busca, distribuicao);
-
-        mensagem.textContent = preenchidos
-            ? `${busca.nome}: campos preenchidos.`
-            : 'Não foram encontrados campos de tropas.';
-
-        abrirPainel();
-        atualizar();
-    }
-
-    function abrirPainel() {
-        painelAberto = true;
-        painel.hidden = false;
-        botaoPainel.textContent = 'Ocultar painel';
-    }
-
-    // --------------------------------------------------
-    // ENVIO AUTOMÁTICO
-    // --------------------------------------------------
-
-    function enviarBusca(busca) {
-        if (!ligado || !envioAuto || aEnviar) return;
-        if (!busca?.disponivel) return;
-
-        const chave = String(busca.indice);
-        const ultimoEnvio = enviadas.get(chave) || 0;
-
-        if (Date.now() - ultimoEnvio < TEMPO_ANTI_DUPLICADO) {
-            return;
-        }
-
-        const botao = busca.elemento.querySelector('.free_send_button');
-
-        if (desativado(botao)) return;
-
-        const buscas = lerBuscas();
-        const atual = buscas.find(b => b.indice === busca.indice);
-
-        if (!atual?.disponivel) return;
-
-        const distribuicao = calcularDistribuicao(
-            lerTropas(),
-            buscas
-        ).get(busca.indice);
-
-        if (!distribuicao) return;
-
-        const total = UNIDADES.reduce(
-            (soma, unidade) => soma + (distribuicao[unidade] || 0),
-            0
-        );
-
-        if (total <= 0) {
-            mensagem.textContent =
-                `${busca.nome}: envio ignorado, não há tropas disponíveis.`;
-            return;
-        }
-
-        const preenchidos = preencherTropas(busca, distribuicao);
-
-        if (!preenchidos) {
-            mensagem.textContent =
-                'Envio cancelado: não encontrei os campos de tropas.';
-            return;
-        }
-
-        aEnviar = true;
-        mensagem.textContent =
-            `${busca.nome}: a preparar envio automático…\n` +
-            textoDistribuicao(distribuicao);
-
-        temporizadorEnvio = window.setTimeout(() => {
-            temporizadorEnvio = null;
-
-            try {
-                const buscasAtualizadas = lerBuscas();
-                const buscaAtualizada = buscasAtualizadas.find(
-                    b => b.indice === busca.indice
-                );
-
-                const botaoAtualizado =
-                    buscaAtualizada?.elemento.querySelector('.free_send_button');
-
-                if (
-                    !ligado ||
-                    !envioAuto ||
-                    !buscaAtualizada?.disponivel ||
-                    desativado(botaoAtualizado)
-                ) {
-                    mensagem.textContent =
-                        `${busca.nome}: envio cancelado; a busca deixou de estar disponível.`;
-                    return;
-                }
-
-                // Registar antes do clique para evitar cliques repetidos
-                // enquanto a página atualiza o estado.
-                enviadas.set(chave, Date.now());
-
-                botaoAtualizado.click();
-
-                mensagem.textContent =
-                    `${busca.nome}: pedido de envio acionado.\n` +
-                    'A verificar a atualização do jogo…';
-
-                abrirPainel();
-
-                window.setTimeout(() => {
-                    aEnviar = false;
-                    atualizar();
-                }, INTERVALO_ENTRE_ENVIOS);
-            } catch (erro) {
-                enviadas.delete(chave);
-                aEnviar = false;
-
-                mensagem.textContent =
-                    `Erro no envio de ${busca.nome}: ${erro.message}`;
-            }
-        }, ATRASO_ENVIO);
-    }
-
-    function processarEnvios() {
-        if (!ligado || !envioAuto || aEnviar) return;
-
-        const agora = Date.now();
-
-        if (agora - ultimaVerificacaoEnvio < INTERVALO_ENTRE_ENVIOS) {
-            return;
-        }
-
-        ultimaVerificacaoEnvio = agora;
-
-        const buscas = lerBuscas();
-        const candidatas = buscas.filter(b => {
-            if (!b.disponivel) return false;
-
-            const ultimo = enviadas.get(String(b.indice)) || 0;
-
-            return agora - ultimo >= TEMPO_ANTI_DUPLICADO;
-        });
-
-        if (!candidatas.length) return;
-
-        // Enviar uma busca de cada vez para dar tempo ao jogo
-        // de atualizar os campos e as tropas disponíveis.
-        enviarBusca(candidatas[0]);
-    }
-
-    // --------------------------------------------------
-    // ATUALIZAÇÃO DO PAINEL
-    // --------------------------------------------------
-
-    function atualizarAtalhos(buscas) {
-        atalhos.replaceChildren();
-
-        for (const busca of buscas) {
-            const botao = elemento(
-                'button',
-                `B${busca.indice + 1}${busca.disponivel ? ' ✓' : ''}`,
-                busca.disponivel ? 'atalho-disponivel' : ''
-            );
-
-            botao.disabled = !busca.disponivel;
-            botao.title = `${busca.nome}: ${busca.estado}`;
-
-            botao.addEventListener('click', () => {
-                prepararBusca(busca.indice);
-            });
-
-            atalhos.appendChild(botao);
-        }
-    }
-
-    function atualizar() {
-        const tropas = lerTropas();
-        const buscas = lerBuscas();
-
-        const totalTropas = UNIDADES.reduce(
-            (soma, u) => soma + tropas[u],
-            0
-        );
-
-        const disponiveis = buscas.filter(b => b.disponivel);
-        const emCurso = buscas.filter(b => b.estado === 'Em curso');
-
-        const distribuicoes = calcularDistribuicao(tropas, buscas);
-
-        resumo.textContent =
-            `${totalTropas.toLocaleString('pt-PT')} tropas detetadas · ` +
-            `${disponiveis.length} disponíveis · ${emCurso.length} em curso`;
-
-        estadoRapido.textContent =
-            `${disponiveis.length} disponíveis · ${emCurso.length} em curso`;
-
-        atualizarAtalhos(buscas);
-        tbody.replaceChildren();
-
-        for (const busca of buscas) {
-            const linha = elemento('tr');
-            const celulaNome = elemento('td', busca.nome);
-            const celulaEstado = elemento('td', busca.estado);
-            const celulaTempo = elemento('td');
-            const celulaRegresso = elemento('td');
-            const celulaDistribuicao = elemento('td');
-
-            if (busca.estado === 'Em curso') {
-                celulaEstado.className = 'curso';
-                celulaTempo.textContent = formatarTempo(busca.segundos);
-                celulaRegresso.textContent = horaRegresso(busca.segundos);
-                celulaDistribuicao.textContent = 'Tropas em missão';
-            } else if (busca.disponivel) {
-                celulaEstado.className = 'disponivel';
-                celulaTempo.textContent = '00:00:00';
-                celulaRegresso.textContent = 'Disponível agora';
-                celulaDistribuicao.textContent = textoDistribuicao(
-                    distribuicoes.get(busca.indice)
-                );
-
-                if (!envioAuto) {
-                    const preparar = elemento(
-                        'button',
-                        `Preparar B${busca.indice + 1}`
-                    );
-
-                    preparar.addEventListener('click', () => {
-                        prepararBusca(busca.indice);
-                    });
-
-                    celulaDistribuicao.append(
-                        document.createElement('br'),
-                        preparar
-                    );
+    function readSearches() {
+        const cards = [
+            ...screen.querySelectorAll('.scavenge-option')
+        ];
+
+        return cards.map((card, index) => {
+            const definition = SEARCHES[index] || {
+                index,
+                name: `Busca ${index + 1}`,
+                factor: 1
+            };
+
+            const countdown = card.querySelector('.return-countdown');
+            const durationEl = card.querySelector('.inactive-view .duration');
+            const button = card.querySelector('.free_send_button');
+            const locked = !!card.querySelector('.locked-view');
+            const active = !!countdown;
+
+            const durationText =
+                countdown?.textContent.trim() ||
+                durationEl?.textContent.trim() ||
+                '';
+
+            const seconds = parseDuration(durationText);
+            const previous = savedState[index] || {};
+
+            let endAt = previous.endAt || null;
+
+            if (active && seconds !== null) {
+                const estimated = Date.now() + seconds * 1000;
+
+                // Só reajustar se o tempo estimado tiver divergido
+                // do valor guardado por mais de 3 segundos.
+                if (!endAt || Math.abs(endAt - estimated) > 3000) {
+                    endAt = estimated;
                 }
             } else {
-                if (busca.estado === 'Contador terminado — validar') {
-                    celulaEstado.className = 'alerta';
+                endAt = null;
+            }
+
+            return {
+                ...definition,
+                card,
+                active,
+                locked,
+                available: !active && !locked && !!button,
+                button,
+                durationText,
+                seconds,
+                endAt,
+                resources: {
+                    wood: card.querySelector('.wood-value')?.textContent.trim() || '—',
+                    stone: card.querySelector('.stone-value')?.textContent.trim() || '—',
+                    iron: card.querySelector('.iron-value')?.textContent.trim() || '—'
                 }
+            };
+        });
+    }
 
-                celulaTempo.textContent =
-                    busca.segundos != null
-                        ? formatarTempo(busca.segundos)
-                        : '—';
+    // ---------------------------------------------------------
+    // Distribuição de tropas
+    // ---------------------------------------------------------
 
-                celulaRegresso.textContent =
-                    busca.segundos > 0
-                        ? horaRegresso(busca.segundos)
-                        : '—';
+    function getWeight(search, position, searches) {
+        if (ratioMode === 'equal') return 1;
 
-                celulaDistribuicao.textContent =
-                    busca.bloqueada
-                        ? 'Nível bloqueado'
-                        : 'À espera de disponibilidade';
+        if (ratioMode === 'manual') {
+            if (searches.length === 1) return 1;
+
+            if (position === 0) {
+                return Math.max(0, firstSearchPercent);
             }
 
-            linha.append(
-                celulaNome,
-                celulaEstado,
-                celulaTempo,
-                celulaRegresso,
-                celulaDistribuicao
-            );
-
-            tbody.appendChild(linha);
-
-            const anterior = estadosAnteriores.get(busca.indice);
-
-            if (
-                ligado &&
-                anterior === 'Em curso' &&
-                busca.estado !== 'Em curso'
-            ) {
-                abrirPainel();
-
-                mensagem.textContent =
-                    `${busca.nome}: o contador terminou.\n` +
-                    (envioAuto
-                        ? 'A verificar a disponibilidade para envio automático.'
-                        : 'Ativa o envio automático ou prepara as tropas manualmente.');
+            if (position === 1) {
+                return Math.max(0, 100 - firstSearchPercent);
             }
 
-            estadosAnteriores.set(busca.indice, busca.estado);
+            return 0;
         }
 
-        if (ligado && envioAuto) {
-            processarEnvios();
+        return weightOf(search);
+    }
+
+    function calculateDistribution(searches, troops) {
+        const targets = searches.filter(s => s.available);
+        const result = new Map();
+
+        targets.forEach(search => result.set(search.index, {}));
+
+        if (!targets.length) {
+            return { targets, result, troops };
+        }
+
+        const weights = targets.map((search, position) =>
+            getWeight(search, position, targets)
+        );
+
+        const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+
+        troops.forEach(troop => {
+            if (troop.available <= 0) {
+                targets.forEach(search => {
+                    result.get(search.index)[troop.id] = 0;
+                });
+                return;
+            }
+
+            const effectiveWeights = totalWeight > 0
+                ? weights
+                : weights.map(() => 1);
+
+            const weightSum = effectiveWeights.reduce((sum, value) => sum + value, 0);
+
+            const exact = effectiveWeights.map(weight =>
+                troop.available * weight / weightSum
+            );
+
+            const allocation = exact.map(Math.floor);
+            let remaining = troop.available -
+                allocation.reduce((sum, value) => sum + value, 0);
+
+            // Distribuir restos de arredondamento para preservar o total.
+            const order = exact
+                .map((value, index) => ({
+                    index,
+                    fraction: value - Math.floor(value)
+                }))
+                .sort((a, b) => b.fraction - a.fraction);
+
+            for (let i = 0; i < remaining; i++) {
+                allocation[order[i % order.length].index]++;
+            }
+
+            targets.forEach((search, index) => {
+                result.get(search.index)[troop.id] = allocation[index];
+            });
+        });
+
+        return { targets, result, troops };
+    }
+
+    // ---------------------------------------------------------
+    // Alertas e persistência
+    // ---------------------------------------------------------
+
+    function showAlert(message, key = message) {
+        if (lastAlert === key) return;
+        lastAlert = key;
+
+        const area = $('[data-role="alert"]');
+        area.innerHTML = '';
+
+        const alertBox = document.createElement('div');
+        alertBox.className = 'ms-alert';
+        alertBox.textContent = `⏰ ${message}`;
+        area.appendChild(alertBox);
+
+        if (
+            'Notification' in window &&
+            Notification.permission === 'granted'
+        ) {
+            try {
+                new Notification('MicaSVG — Buscas', { body: message });
+            } catch (_) {}
         }
     }
 
-    // --------------------------------------------------
-    // BOTÕES
-    // --------------------------------------------------
+    function saveSearchState(searches) {
+        const next = {};
 
-    botaoPainel.addEventListener('click', () => {
-        painelAberto = !painelAberto;
-        painel.hidden = !painelAberto;
+        searches.forEach(search => {
+            next[search.index] = {
+                active: search.active,
+                endAt: search.active ? search.endAt : null,
+                name: search.name
+            };
+        });
 
-        botaoPainel.textContent = painelAberto
-            ? 'Ocultar painel'
-            : '☷ Buscas';
+        savedState = next;
 
-        if (painelAberto) atualizar();
-    });
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+        } catch (_) {}
+    }
 
-    botaoMonitor.addEventListener('click', () => {
-        ligado = !ligado;
+    // ---------------------------------------------------------
+    // Preparar campos para confirmação manual
+    // ---------------------------------------------------------
 
-        if (ligado) {
-            botaoMonitor.textContent = 'Monitor: ON';
-            botaoMonitor.className = 'ativo';
+    function prepareSearch(index) {
+        const searches = readSearches();
+        const troops = readTroops();
+        const plan = calculateDistribution(searches, troops);
+        const search = searches.find(s => s.index === index);
 
-            if (intervaloId === null) {
-                intervaloId = window.setInterval(atualizar, INTERVALO);
-            }
-
-            mensagem.textContent =
-                'Monitorização ativa. Os estados são atualizados a cada segundo.';
-        } else {
-            botaoMonitor.textContent = 'Monitor: OFF';
-            botaoMonitor.className = 'inativo';
-
-            if (intervaloId !== null) {
-                window.clearInterval(intervaloId);
-                intervaloId = null;
-            }
-
-            if (temporizadorEnvio !== null) {
-                window.clearTimeout(temporizadorEnvio);
-                temporizadorEnvio = null;
-            }
-
-            aEnviar = false;
-            mensagem.textContent = 'Monitorização desligada.';
+        if (!search || !search.available) {
+            alert('Esta busca não está disponível neste momento.');
+            return;
         }
 
-        atualizar();
-    });
+        const allocation = plan.result.get(index) || {};
 
-    botaoAuto.addEventListener('click', () => {
-        envioAuto = !envioAuto;
+        for (const troop of troops) {
+            if (!troop.input) continue;
 
-        botaoAuto.textContent =
-            `Envio automático: ${envioAuto ? 'ON' : 'OFF'}`;
+            troop.input.value = String(allocation[troop.id] || 0);
 
-        botaoAuto.className = envioAuto ? 'ativo' : 'inativo';
-
-        mensagem.textContent = envioAuto
-            ? 'Envio automático ativado. Liga também o monitor para começar.'
-            : 'Envio automático desligado. Nenhuma nova busca será enviada automaticamente.';
-
-        if (envioAuto && !ligado) {
-            mensagem.textContent +=
-                '\nClica em Monitor: OFF para o ativar.';
+            ['input', 'change', 'keyup'].forEach(type => {
+                troop.input.dispatchEvent(new Event(type, { bubbles: true }));
+            });
         }
 
-        atualizar();
+        search.card.scrollIntoView({
+            behavior: 'smooth',
+            block: 'center'
+        });
+
+        search.card.style.outline = '2px solid #388746';
+        setTimeout(() => {
+            if (search.card.isConnected) {
+                search.card.style.outline = '';
+            }
+        }, 2500);
+
+        showAlert(
+            `Tropas preparadas para ${search.name}. Confirma os valores e inicia a busca manualmente.`,
+            `prepared-${index}-${Date.now()}`
+        );
+    }
+
+    // ---------------------------------------------------------
+    // Renderização do painel
+    // ---------------------------------------------------------
+
+    function renderSearchCards(searches) {
+        searchContainer.innerHTML = '';
+
+        searches.forEach(search => {
+            const card = document.createElement('div');
+            card.className = 'ms-card';
+
+            if (search.active) card.classList.add('active');
+            else if (search.available) card.classList.add('ready');
+            else if (search.locked) card.classList.add('locked');
+
+            const title = document.createElement('div');
+            title.className = 'ms-title';
+
+            const name = document.createElement('strong');
+            name.textContent = search.name;
+
+            const badge = document.createElement('span');
+            badge.className = 'ms-badge';
+            badge.textContent = search.locked
+                ? 'Bloqueada'
+                : search.active
+                    ? 'Em curso'
+                    : search.available
+                        ? 'Disponível'
+                        : 'Indisponível';
+
+            title.append(name, badge);
+
+            const time = document.createElement('div');
+            time.className = 'ms-time';
+
+            if (search.active) {
+                const remaining = search.seconds ?? 0;
+                time.textContent = fmtDuration(remaining);
+
+                if (remaining <= 0) {
+                    badge.textContent = 'A aguardar atualização';
+                }
+            } else if (search.available) {
+                time.textContent = search.durationText
+                    ? `Duração: ${search.durationText}`
+                    : 'Pronta';
+            } else {
+                time.textContent = '—';
+            }
+
+            const resources = document.createElement('div');
+            resources.className = 'ms-muted';
+            resources.textContent =
+                `Madeira ${search.resources.wood} · ` +
+                `Argila ${search.resources.stone} · ` +
+                `Ferro ${search.resources.iron}`;
+
+            card.append(title, time, resources);
+
+            if (search.available) {
+                const actions = document.createElement('div');
+                actions.className = 'ms-actions';
+
+                const prepare = document.createElement('button');
+                prepare.type = 'button';
+                prepare.textContent = 'Preparar tropas';
+                prepare.dataset.action = 'prepare';
+                prepare.dataset.index = String(search.index);
+
+                const locate = document.createElement('button');
+                locate.type = 'button';
+                locate.textContent = 'Ir à busca';
+                locate.dataset.action = 'locate';
+                locate.dataset.index = String(search.index);
+
+                actions.append(prepare, locate);
+                card.appendChild(actions);
+            }
+
+            searchContainer.appendChild(card);
+        });
+    }
+
+    function renderDistribution(searches, troops) {
+        const container = $('[data-role="distribution"]');
+        container.innerHTML = '';
+
+        const plan = calculateDistribution(searches, troops);
+
+        if (!plan.targets.length) {
+            const message = document.createElement('p');
+            message.className = 'ms-muted';
+            message.textContent =
+                'Não há buscas desbloqueadas e disponíveis para distribuir tropas.';
+            container.appendChild(message);
+            return;
+        }
+
+        const table = document.createElement('table');
+        table.className = 'ms-table';
+
+        const thead = document.createElement('thead');
+        const header = document.createElement('tr');
+
+        const unitHeading = document.createElement('th');
+        unitHeading.textContent = 'Tropa';
+        header.appendChild(unitHeading);
+
+        plan.targets.forEach(search => {
+            const th = document.createElement('th');
+            th.textContent = search.name.replace('Busca ', '');
+            header.appendChild(th);
+        });
+
+        thead.appendChild(header);
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+
+        troops.forEach(troop => {
+            const tr = document.createElement('tr');
+
+            const label = document.createElement('td');
+            label.textContent = troop.name;
+            tr.appendChild(label);
+
+            plan.targets.forEach(search => {
+                const td = document.createElement('td');
+                td.textContent = String(
+                    plan.result.get(search.index)?.[troop.id] || 0
+                );
+                tr.appendChild(td);
+            });
+
+            tbody.appendChild(tr);
+        });
+
+        const capacityRow = document.createElement('tr');
+        const capacityLabel = document.createElement('td');
+        capacityLabel.textContent = 'Carga teórica';
+        capacityLabel.style.fontWeight = 'bold';
+        capacityRow.appendChild(capacityLabel);
+
+        plan.targets.forEach(search => {
+            const td = document.createElement('td');
+            const capacity = troops.reduce((sum, troop) => {
+                const count = plan.result.get(search.index)?.[troop.id] || 0;
+                return sum + count * troop.carry;
+            }, 0);
+
+            td.textContent = capacity.toLocaleString('pt-PT');
+            td.title = 'Capacidade teórica de carga das tropas atribuídas';
+            capacityRow.appendChild(td);
+        });
+
+        tbody.appendChild(capacityRow);
+        table.appendChild(tbody);
+        container.appendChild(table);
+
+        plan.targets.forEach(search => {
+            const row = document.createElement('div');
+            row.className = 'ms-row';
+
+            const label = document.createElement('span');
+            label.textContent = search.name;
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = 'Preparar';
+            button.dataset.action = 'prepare';
+            button.dataset.index = String(search.index);
+
+            row.append(label, button);
+            container.appendChild(row);
+        });
+    }
+
+    function renderNextReturn(searches) {
+        const container = $('[data-role="next"]');
+
+        const active = searches
+            .filter(search => search.active && search.endAt)
+            .sort((a, b) => a.endAt - b.endAt);
+
+        if (!active.length) {
+            const available = searches.find(search => search.available);
+
+            container.textContent = available
+                ? `${available.name} está disponível. Prepara as tropas e confirma o envio manualmente.`
+                : 'Não há regressos ativos identificados.';
+            return;
+        }
+
+        const next = active[0];
+        const remaining = next.seconds ?? 0;
+        const predicted = Date.now() + remaining * 1000;
+
+        container.textContent =
+            `${next.name}: cerca das ${fmtClock(predicted)} ` +
+            `(em ${fmtDuration(remaining)}).`;
+    }
+
+    function detectCompletions(searches) {
+        for (const search of searches) {
+            const previous = savedState[search.index];
+
+            if (previous?.active && !search.active && !search.locked) {
+                const key = `finished-${search.index}-${Date.now()}`;
+
+                showAlert(
+                    `${search.name} terminou ou ficou disponível. Confirma o estado no jogo.`,
+                    key
+                );
+
+                const card = search.card;
+                card.classList.add('done');
+
+                setTimeout(() => {
+                    if (card.isConnected) card.classList.remove('done');
+                }, 3500);
+            }
+        }
+    }
+
+    function refresh() {
+        if (!document.body.contains(panel)) {
+            destroy();
+            return;
+        }
+
+        if (!document.querySelector('#scavenge_screen')) {
+            $('[data-role="status"]').textContent =
+                'A página de buscas já não está disponível.';
+            return;
+        }
+
+        if (!running) return;
+
+        const searches = readSearches();
+        const troops = readTroops();
+
+        detectCompletions(searches);
+        renderSearchCards(searches);
+        renderDistribution(searches, troops);
+        renderNextReturn(searches);
+
+        const activeCount = searches.filter(search => search.active).length;
+        const availableCount = searches.filter(search => search.available).length;
+        const lockedCount = searches.filter(search => search.locked).length;
+
+        $('[data-role="status"]').textContent =
+            `Monitorização ativa · ${activeCount} em curso · ` +
+            `${availableCount} disponíveis · ${lockedCount} bloqueadas`;
+
+        saveSearchState(searches);
+        lastSnapshot = searches;
+    }
+
+    // ---------------------------------------------------------
+    // Eventos
+    // ---------------------------------------------------------
+
+    panel.addEventListener('click', event => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+
+        const action = button.dataset.action;
+
+        if (action === 'close') {
+            destroy();
+            return;
+        }
+
+        if (action === 'minimize') {
+            minimized = !minimized;
+            $('[data-role="content"]').classList.toggle('ms-hidden', minimized);
+            button.textContent = minimized ? '+' : '−';
+            return;
+        }
+
+        if (action === 'pause') {
+            running = !running;
+            button.textContent = running ? 'Pausar' : 'Retomar';
+
+            $('[data-role="status"]').textContent = running
+                ? 'Monitorização ativa.'
+                : 'Monitorização pausada.';
+
+            if (running) refresh();
+            return;
+        }
+
+        if (action === 'refresh') {
+            refresh();
+            return;
+        }
+
+        if (action === 'prepare') {
+            prepareSearch(Number(button.dataset.index));
+            return;
+        }
+
+        if (action === 'locate') {
+            const index = Number(button.dataset.index);
+            const card = screen.querySelectorAll('.scavenge-option')[index];
+
+            card?.scrollIntoView({
+                behavior: 'smooth',
+                block: 'center'
+            });
+
+            if (card) {
+                card.style.outline = '2px solid #388746';
+                setTimeout(() => {
+                    if (card.isConnected) card.style.outline = '';
+                }, 2500);
+            }
+            return;
+        }
+
+        if (action === 'notify') {
+            if (!('Notification' in window)) {
+                alert('Este navegador não suporta notificações.');
+                return;
+            }
+
+            Notification.requestPermission().then(permission => {
+                alert(permission === 'granted'
+                    ? 'Notificações autorizadas.'
+                    : 'As notificações não foram autorizadas.');
+            });
+        }
     });
 
-    botaoAtualizar.addEventListener('click', atualizar);
+    const mode = document.getElementById(`${PANEL_ID}-mode`);
+    mode.addEventListener('change', () => {
+        ratioMode = mode.value;
+        $('[data-role="custom-ratio"]').classList.toggle(
+            'ms-hidden',
+            ratioMode !== 'manual'
+        );
+        refresh();
+    });
 
-    // --------------------------------------------------
-    // LIMPEZA
-    // --------------------------------------------------
+    const ratio = document.getElementById(`${PANEL_ID}-ratio`);
+    ratio.addEventListener('input', () => {
+        firstSearchPercent = Number(ratio.value);
+        setText(panel, '[data-role="ratio-label"]', `${firstSearchPercent}%`);
+        refresh();
+    });
 
-    const gestor = {
-        destroy() {
-            if (intervaloId !== null) {
-                window.clearInterval(intervaloId);
-            }
+    panel.querySelector('[data-action="notify"]').addEventListener('click', () => {});
 
-            if (temporizadorEnvio !== null) {
-                window.clearTimeout(temporizadorEnvio);
-            }
+    // Observar mudanças do jogo sem observar o próprio painel.
+    observer = new MutationObserver(() => {
+        if (running) refresh();
+    });
 
-            barra.remove();
-            painel.remove();
-            estilo.remove();
+    observer.observe(screen, {
+        subtree: true,
+        childList: true,
+        characterData: true
+    });
 
-            delete window.__twBuscasRapidas;
+    timer = setInterval(refresh, 1000);
+
+    function destroy() {
+        if (timer) clearInterval(timer);
+        if (observer) observer.disconnect();
+
+        panel.remove();
+        style.remove();
+
+        if (window.__micasvgBuscas?.destroy === destroy) {
+            delete window.__micasvgBuscas;
         }
+    }
+
+    window.__micasvgBuscas = {
+        version: VERSION,
+        refresh,
+        readSearches,
+        readTroops,
+        destroy
     };
 
-    botaoFechar.addEventListener('click', () => {
-        gestor.destroy();
-    });
+    refresh();
 
-    window.__twBuscasRapidas = gestor;
-
-    atualizar();
-
-    console.info(
-        '[Buscas] Gestor carregado. ' +
-        'Ativa o monitor e o envio automático para iniciar.'
-    );
+    console.log(`[MicaSVG Buscas v${VERSION}] Painel iniciado.`);
 })();
